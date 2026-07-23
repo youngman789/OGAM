@@ -1,1 +1,7 @@
+name: Preflight Inspection
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - preflight-inspection
