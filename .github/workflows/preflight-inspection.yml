@@ -5,3 +5,63 @@ on:
   push:
     branches:
       - preflight-inspection
+      - name: Discover Workspace and Shared Schemes
+        run: |
+          set -o pipefail
+
+          WORKSPACES=()
+          while IFS= read -r workspace; do
+            WORKSPACES+=("$workspace")
+          done < <(find ios -maxdepth 2 -name "*.xcworkspace")
+
+          WORKSPACE_COUNT="${#WORKSPACES[@]}"
+
+          {
+            echo "=== WORKSPACE DISCOVERY ==="
+
+            if [ "$WORKSPACE_COUNT" -eq 0 ]; then
+              echo "::error::No Xcode workspace found in ios/ directory!"
+              exit 1
+            fi
+
+            if [ "$WORKSPACE_COUNT" -gt 1 ]; then
+              echo "::warning::Multiple .xcworkspace directories detected:"
+              printf '%s\n' "${WORKSPACES[@]}"
+            fi
+
+            WORKSPACE="${WORKSPACES[0]}"
+
+            echo "DETECTED_WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+            echo "Found Workspace: $WORKSPACE"
+            echo ""
+
+            echo "=== LISTING SCHEMES ==="
+            xcodebuild -list -workspace "$WORKSPACE"
+            echo ""
+          } | tee -a preflight-inspection.log
+
+          WORKSPACE="${WORKSPACES[0]}"
+
+          SCHEMES=$(xcodebuild -list -workspace "$WORKSPACE" \
+            | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -v '^Pods-' \
+            | grep -v '^$' || true)
+
+          if [ -z "$SCHEMES" ]; then
+            echo "::error::No valid shared scheme found in $WORKSPACE!" \
+              | tee -a preflight-inspection.log
+            exit 1
+          fi
+
+          {
+            echo "=== DETECTED SHARED SCHEMES ==="
+            echo "$SCHEMES"
+            echo ""
+          } | tee -a preflight-inspection.log
+
+          {
+            echo "DETECTED_SCHEMES<<EOF"
+            echo "$SCHEMES"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
