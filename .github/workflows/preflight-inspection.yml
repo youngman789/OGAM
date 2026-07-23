@@ -7,7 +7,7 @@ jobs:
   preflight-inspection:
     runs-on: macos-latest
 
-  see  steps:
+    steps:
       - name: Checkout tag v0.0.103
         uses: actions/checkout@v4
         with:
@@ -18,7 +18,7 @@ jobs:
         run: |
           {
             echo "OGAM iOS Preflight Inspection"
-            echo "Requested source: v0.0. zed 103"
+            echo "Requested source: v0.0.103"
             echo "Runner: $RUNNER_OS"
             echo "Timestamp: $(date -u)"
             echo ""
