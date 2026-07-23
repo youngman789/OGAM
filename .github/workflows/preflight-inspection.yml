@@ -1,4 +1,4 @@
-name: Preflight Inspection
+ex name: Preflight Inspection
 
 on:
   workflow_dispatch:
@@ -16,31 +16,31 @@ on:
 
           WORKSPACE_COUNT="${#WORKSPACES[@]}"
 
-          {
-            echo "=== WORKSPACE DISCOVERY ==="
+          if [ "$WORKSPACE_COUNT" -eq 0 ]; then
+            echo "::error::No Xcode workspace found in ios/ directory!" \
+              | tee -a preflight-inspection.log
+            exit 1
+          fi
 
-            if [ "$WORKSPACE_COUNT" -eq 0 ]; then
-              echo "::error::No Xcode workspace found in ios/ directory!"
-              exit 1
-            fi
-
-            if [ "$WORKSPACE_COUNT" -gt 1 ]; then
+          if [ "$WORKSPACE_COUNT" -gt 1 ]; then
+            {
               echo "::warning::Multiple .xcworkspace directories detected:"
               printf '%s\n' "${WORKSPACES[@]}"
-            fi
+            } | tee -a preflight-inspection.log
+          fi
 
-            WORKSPACE="${WORKSPACES[0]}"
+          WORKSPACE="${WORKSPACES[0]}"
 
-            echo "DETECTED_WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+          {
+            echo "=== WORKSPACE DISCOVERY ==="
             echo "Found Workspace: $WORKSPACE"
             echo ""
-
             echo "=== LISTING SCHEMES ==="
             xcodebuild -list -workspace "$WORKSPACE"
             echo ""
           } | tee -a preflight-inspection.log
 
-          WORKSPACE="${WORKSPACES[0]}"
+          echo "DETECTED_WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
 
           SCHEMES=$(xcodebuild -list -workspace "$WORKSPACE" \
             | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' \
