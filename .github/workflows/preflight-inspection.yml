@@ -7,7 +7,7 @@ jobs:
   preflight-inspection:
     runs-on: macos-latest
 
-    steps:
+  see  steps:
       - name: Checkout tag v0.0.103
         uses: actions/checkout@v4
         with:
