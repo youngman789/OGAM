@@ -1,31 +1,145 @@
-ex name: Preflight Inspection
+name: Preflight Inspection (off-grid-ai/OGAM v0.0.103)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - preflight-inspection
-      - name: Discover Workspace and Shared Schemes
+
+jobs:
+  preflight-inspection:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout tag v0.0.103
+        uses: actions/checkout@v4
+        with:
+          ref: v0.0.103
+
+      - name: Initialize preflight log
+        shell: bash
+        run: |
+          {
+            echo "OGAM iOS Preflight Inspection"
+            echo "Requested source: v0.0. zed 103"
+            echo "Runner: $RUNNER_OS"
+            echo "Timestamp: $(date -u)"
+            echo ""
+          } > preflight-inspection.log
+
+      - name: Print repository tree
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "=== REPOSITORY ROOT TREE ==="
+            ls -la
+            echo ""
+
+            echo "=== IOS DIRECTORY TREE ==="
+            if [ -d "ios" ]; then
+              ls -la ios/
+              echo ""
+
+              echo "=== XCODE PROJECTS, WORKSPACES, AND SCHEMES ==="
+              find ios -maxdepth 4 \
+                \( -name "*.xcodeproj" \
+                -o -name "*.xcworkspace" \
+                -o -name "*.xcscheme" \) \
+                -print
+            else
+              echo "ios/ directory not found."
+            fi
+
+            echo ""
+          } | tee -a preflight-inspection.log
+
+      - name: Detect dependency and environment files
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "=== DEPENDENCY FILE DETECTION ==="
+
+            for file in \
+              package.json \
+              package-lock.json \
+              Gemfile \
+              Gemfile.lock \
+              .ruby-version \
+              ios/Podfile \
+              ios/Podfile.lock
+            do
+              if [ -f "$file" ]; then
+                echo "[FOUND] $file"
+              else
+                echo "[MISSING] $file"
+              fi
+            done
+
+            echo ""
+          } | tee -a preflight-inspection.log
+
+      - name: Install Node dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+
+          if [ -f "package-lock.json" ]; then
+            {
+              echo "=== INSTALLING NODE DEPENDENCIES ==="
+              npm ci
+              echo ""
+            } 2>&1 | tee -a preflight-inspection.log
+          else
+            echo "Skipping npm ci: package-lock.json not found." \
+              | tee -a preflight-inspection.log
+          fi
+
+      - name: Install CocoaPods dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+
+          if [ -f "ios/Podfile" ]; then
+            {
+              echo "=== INSTALLING COCOAPODS DEPENDENCIES ==="
+              cd ios
+              pod install
+              echo ""
+            } 2>&1 | tee -a preflight-inspection.log
+          else
+            echo "Skipping pod install: ios/Podfile not found." \
+              | tee -a preflight-inspection.log
+          fi
+
+      - name: Discover workspace and shared schemes
+        shell: bash
         run: |
           set -o pipefail
 
           WORKSPACES=()
+
           while IFS= read -r workspace; do
-            WORKSPACES+=("$workspace")
-          done < <(find ios -maxdepth 2 -name "*.xcworkspace")
+            if [ -n "$workspace" ]; then
+              WORKSPACES+=("$workspace")
+            fi
+          done < <(
+            find ios -maxdepth 2 -name "*.xcworkspace" -print 2>/dev/null
+          )
 
           WORKSPACE_COUNT="${#WORKSPACES[@]}"
 
           if [ "$WORKSPACE_COUNT" -eq 0 ]; then
-            echo "::error::No Xcode workspace found in ios/ directory!" \
+            echo "::error::No Xcode workspace found in ios/ directory." \
               | tee -a preflight-inspection.log
             exit 1
           fi
 
           if [ "$WORKSPACE_COUNT" -gt 1 ]; then
             {
-              echo "::warning::Multiple .xcworkspace directories detected:"
+              echo "::warning::Multiple Xcode workspaces detected:"
               printf '%s\n' "${WORKSPACES[@]}"
+              echo ""
             } | tee -a preflight-inspection.log
           fi
 
@@ -33,23 +147,44 @@ on:
 
           {
             echo "=== WORKSPACE DISCOVERY ==="
-            echo "Found Workspace: $WORKSPACE"
+            echo "Workspace count: $WORKSPACE_COUNT"
+            echo "Selected workspace: $WORKSPACE"
             echo ""
-            echo "=== LISTING SCHEMES ==="
+
+            echo "=== XCODEBUILD LIST OUTPUT ==="
             xcodebuild -list -workspace "$WORKSPACE"
             echo ""
-          } | tee -a preflight-inspection.log
+          } 2>&1 | tee -a preflight-inspection.log
 
           echo "DETECTED_WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
 
-          SCHEMES=$(xcodebuild -list -workspace "$WORKSPACE" \
-            | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' \
-            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-            | grep -v '^Pods-' \
-            | grep -v '^$' || true)
+          SCHEMES="$(
+            xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
+              | awk '
+                  /Schemes:/ {
+                    capture = 1
+                    next
+                  }
+
+                  capture && /^[[:space:]]*$/ {
+                    exit
+                  }
+
+                  capture {
+                    sub(/^[[:space:]]+/, "")
+                    sub(/[[:space:]]+$/, "")
+                    if (length($0) > 0) {
+                      print
+                    }
+                  }
+                ' \
+              | grep -v '^Pods-' \
+              | grep -v '^$' \
+              || true
+          )"
 
           if [ -z "$SCHEMES" ]; then
-            echo "::error::No valid shared scheme found in $WORKSPACE!" \
+            echo "::error::No valid shared scheme found in $WORKSPACE." \
               | tee -a preflight-inspection.log
             exit 1
           fi
@@ -65,3 +200,73 @@ on:
             echo "$SCHEMES"
             echo "EOF"
           } >> "$GITHUB_ENV"
+
+      - name: Extract Xcode build settings
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "=== XCODE BUILD SETTINGS ==="
+
+            while IFS= read -r scheme; do
+              if [ -z "$scheme" ]; then
+                continue
+              fi
+
+              echo "=================================================="
+              echo "BUILD SETTINGS FOR SCHEME: $scheme"
+              echo "=================================================="
+
+              xcodebuild \
+                -workspace "$DETECTED_WORKSPACE" \
+                -scheme "$scheme" \
+                -showBuildSettings \
+                | grep -E \
+                  'TARGET_NAME|PRODUCT_NAME|FULL_PRODUCT_NAME|PRODUCT_BUNDLE_IDENTIFIER|IPHONEOS_DEPLOYMENT_TARGET|CODE_SIGN_ENTITLEMENTS|WRAPPER_NAME|EXECUTABLE_NAME' \
+                || true
+
+              echo ""
+            done <<< "$DETECTED_SCHEMES"
+          } 2>&1 | tee -a preflight-inspection.log
+
+      - name: Locate and print entitlement files
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "=== ENTITLEMENT FILE INSPECTION ==="
+
+            ENTITLEMENT_FILES="$(
+              find . -type f -name "*.entitlements" -print
+            )"
+
+            if [ -z "$ENTITLEMENT_FILES" ]; then
+              echo "No .entitlements files found in repository."
+            else
+              while IFS= read -r file; do
+                if [ -z "$file" ]; then
+                  continue
+                fi
+
+                echo "--------------------------------------------------"
+                echo "CONTENTS OF: $file"
+                echo "--------------------------------------------------"
+                cat "$file"
+                echo ""
+              done <<< "$ENTITLEMENT_FILES"
+            fi
+
+            echo ""
+          } | tee -a preflight-inspection.log
+
+      - name: Upload preflight execution log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preflight-build-settings-log
+          if-no-files-found: warn
+          path: |
+            preflight-inspection.log
+            ios/Podfile.lock
