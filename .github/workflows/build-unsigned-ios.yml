@@ -45,8 +45,8 @@ jobs:
         with:
           ruby-version: "3.2"
           bundler-cache: false
-          
-          - name: Install CocoaPods dependencies
+
+      - name: Install CocoaPods dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +57,6 @@ jobs:
           fi
 
           cd ios
-
           if [ -f ../Gemfile ]; then
             bundle install
             bundle exec pod install
