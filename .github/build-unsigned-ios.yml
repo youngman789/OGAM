@@ -40,9 +40,22 @@ jobs:
 
           npm ci
 
+           - name: Install Node dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f package-lock.json ]; then
+            echo "::error::package-lock.json was not found."
+            exit 1
+          fi
+
+          npm ci
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
+          ruby-version: "3.2"
           bundler-cache: false
 
       - name: Install CocoaPods dependencies
