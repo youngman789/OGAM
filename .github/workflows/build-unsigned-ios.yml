@@ -1,1 +1,193 @@
+name: Build Unsigned iOS IPA
 
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git branch or tag to build
+        required: true
+        default: main
+      scheme:
+        description: Shared Xcode scheme; leave blank to auto-detect
+        required: false
+        default: ""
+
+jobs:
+  build-unsigned-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Node dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f package-lock.json ]; then
+            echo "::error::package-lock.json was not found."
+            exit 1
+          fi
+
+          npm ci
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: false
+
+      - name: Install CocoaPods dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f ios/Podfile ]; then
+            echo "::error::ios/Podfile was not found."
+            exit 1
+          fi
+
+          cd ios
+
+          if [ -f ../Gemfile ]; then
+            bundle install
+            bundle exec pod install
+          else
+            pod install
+          fi
+
+      - name: Discover workspace and scheme
+        shell: bash
+        env:
+          REQUESTED_SCHEME: ${{ inputs.scheme }}
+        run: |
+          set -euo pipefail
+
+          WORKSPACES=()
+
+          while IFS= read -r workspace; do
+            if [ -n "$workspace" ]; then
+              WORKSPACES+=("$workspace")
+            fi
+          done < <(
+            find ios -maxdepth 2 -name "*.xcworkspace" -print
+          )
+
+          if [ "${#WORKSPACES[@]}" -eq 0 ]; then
+            echo "::error::No Xcode workspace was found under ios/."
+            exit 1
+          fi
+
+          if [ "${#WORKSPACES[@]}" -gt 1 ]; then
+            echo "::warning::Multiple workspaces were found:"
+            printf '%s\n' "${WORKSPACES[@]}"
+          fi
+
+          WORKSPACE="${WORKSPACES[0]}"
+
+          if [ -n "$REQUESTED_SCHEME" ]; then
+            SCHEME="$REQUESTED_SCHEME"
+          else
+            SCHEME="$(
+              xcodebuild -list -workspace "$WORKSPACE" -json \
+                | python3 -c '
+          import json
+          import sys
+
+          data = json.load(sys.stdin)
+          schemes = data.get("workspace", {}).get("schemes", [])
+          schemes = [
+              scheme for scheme in schemes
+              if not scheme.startswith("Pods-")
+          ]
+
+          if not schemes:
+              raise SystemExit("No non-Pods shared scheme found.")
+
+          print(schemes[0])
+          '
+            )"
+          fi
+
+          if [ -z "$SCHEME" ]; then
+            echo "::error::No usable shared scheme was detected."
+            exit 1
+          fi
+
+          echo "BUILD_WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+          echo "BUILD_SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+          echo "Selected workspace: $WORKSPACE"
+          echo "Selected scheme: $SCHEME"
+
+      - name: Build unsigned application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf build
+
+          xcodebuild \
+            -workspace "$BUILD_WORKSPACE" \
+            -scheme "$BUILD_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Locate application bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(
+            find build/DerivedData/Build/Products \
+              -type d \
+              -path "*Release-iphoneos/*.app" \
+              ! -path "*Tests*.app" \
+              | head -n 1
+          )"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No Release-iphoneos .app bundle was produced."
+            find build/DerivedData/Build/Products -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "Found application: $APP_PATH"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf unsigned-package
+          mkdir -p unsigned-package/Payload
+
+          cp -R "$APP_PATH" unsigned-package/Payload/
+
+          cd unsigned-package
+          zip -r ../OGAM-unsigned.ipa Payload
+
+          cd ..
+          ls -lh OGAM-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OGAM-unsigned-IPA
+          if-no-files-found: error
+          path: OGAM-unsigned.ipa
